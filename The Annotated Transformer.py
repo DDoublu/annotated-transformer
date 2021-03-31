@@ -372,17 +372,92 @@ def run_epoch(data_iter, model, loss_compute):
 global max_src_in_batch, max_tgt_in_batch
 
 
-def batch_size_fn(new, count, sofar):
+def batch_size_fn(new, count, sofar):  # sofar 参数没用到？
     "Keep augmenting batch and calculate total number of tokens + padding."
     global max_src_in_batch, max_tgt_in_batch
     if count == 1:
         max_src_in_batch = 0
         max_tgt_in_batch = 0
     max_src_in_batch = max(max_src_in_batch,  len(new.src))
-    max_tgt_in_batch = max(max_tgt_in_batch,  len(new.trg) + 2)
+    max_tgt_in_batch = max(max_tgt_in_batch,  len(new.trg) + 2)  # 为何要加2？<BOS><EOS>？
     src_elements = count * max_src_in_batch
     tgt_elements = count * max_tgt_in_batch
     return max(src_elements, tgt_elements)
 
+
+# 5.2 Hardware and Schedule
+
+# 5.3 Optimizer
+class NoamOpt:
+    "Optim wrapper that implements rate."
+
+    def __init__(self, model_size, factor, warmup, optimizer):
+        self.optimizer = optimizer
+        self._step = 0
+        self.warmup = warmup
+        self.factor = factor
+        self.model_size = model_size
+        self._rate = 0
+
+    def step(self):
+        "Update parameters and rate"
+        self._step += 1
+        rate = self.rate()
+        for p in self.optimizer.param_groups:
+            p['lr'] = rate  # 意思是模型中每个参数的学习率可以单独设置？
+        self._rate = rate
+        self.optimizer.step()
+
+    def rate(self, step=None):
+        "Implement `lrate` above"
+        if step is None:
+            step = self._step
+        return self.factor * \
+               (self.model_size ** (-0.5) *
+                min(step ** (-0.5), step * self.warmup ** (-1.5)))  # 论文中计算学习率的公式(3)，但是多乘了一个factor是为何？
+
+
+def get_std_opt(model):
+    return NoamOpt(model.src_embed[0].d_model, 2, 4000,
+                   torch.optim.Adam(model.parameters(), lr=0, betas=(0.9, 0.98), eps=1e-9))  # factor是2，其余的超参数都与原文一致
+
+
+# Example of the curves of this model for different model sizes and for optimization hyperparameters.
+# Three settings of the lrate hyperparameters.
+# opts = [NoamOpt(512, 1, 4000, None),
+#         NoamOpt(512, 1, 8000, None),
+#         NoamOpt(256, 1, 4000, None)]
+# plt.plot(np.arange(1, 20000), [[opt.rate(i) for opt in opts] for i in range(1, 20000)])
+# plt.legend(["512:4000", "512:8000", "256:4000"])
+# plt.show()
+
+
+# 5.4 Regularization
+# Label Smoothing
+# implement label smoothing using the KL div loss
+
+class LabelSmoothing(nn.Module):
+    "Implement label smoothing."
+
+    def __init__(self, size, padding_idx, smoothing=0.0):
+        super(LabelSmoothing, self).__init__()
+        self.criterion = nn.KLDivLoss(size_average=False)
+        self.padding_idx = padding_idx
+        self.confidence = 1.0 - smoothing
+        self.smoothing = smoothing
+        self.size = size
+        self.true_dist = None
+
+    def forward(self, x, target):
+        assert x.size(1) == self.size  # 这里x.size(1)不是每句话的token数量么？
+        true_dist = x.data.clone()
+        true_dist.fill_(self.smoothing / (self.size - 2))  # 为何减去2？<BOS><EOS>？
+        true_dist.scatter_(1, target.data.unsqueeze(1), self.confidence)
+        true_dist[:, self.padding_idx] = 0
+        mask = torch.nonzero(target.data == self.padding_idx)
+        if mask.dim() > 0:
+            true_dist.index_fill_(0, mask.squeeze(), 0.0)
+        self.true_dist = true_dist
+        return self.criterion(x, Variable(true_dist, requires_grad=False))
 
 
