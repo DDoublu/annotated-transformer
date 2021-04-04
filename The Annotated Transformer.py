@@ -309,13 +309,13 @@ def make_model(src_vocab, tgt_vocab, N=6,
     for i, p in enumerate(model.parameters()):
         if p.dim() > 1:
             nn.init.xavier_uniform_(p)
-    print(i)
+    # print(i)
     return model
 
 
 # Small example model.
-tmp_model = make_model(10, 10, 2)  # N增加1，model.parameters()数量增加42（7、49、91、133）
-None
+# tmp_model = make_model(10, 10, 2)  # N增加1，model.parameters()数量增加42（7、49、91、133）
+# None
 
 
 # 5 Training
@@ -325,15 +325,22 @@ None
 class Batch:
     "Object for holding a batch of data with mask during training."
 
+    r"""
+    参数：
+        src (torch.Tensor)：模型的输入（英译法任务中输入的英文句子），shape=(batch，ntokens)
+        trg (torch.Tensor)：模型的输出（ground truth，英译法任务中标准答案的法语句子），训练时可指定，预测时为None。
+        pad (int)：padding的填充值？但是前面构造数据的时候明明在每个sample的第0个token填充的1
+    """
+
     def __init__(self, src, trg=None, pad=0):
         self.src = src
         self.src_mask = (src != pad).unsqueeze(-2)
-        if trg is not None:
+        if trg is not None: # 训练时trg不是None
             self.trg = trg[:, :-1]   # 除去最后一列？因为shifted right？预测第i个token输入的只是前（i-1）个token，只有这（i-1）个token需要做mask？
             self.trg_y = trg[:, 1:]  # 除去第一列？因为预测第一个token不计算loss？还是压根不需要预测第一个token？
             self.trg_mask = \
                 self.make_std_mask(self.trg, pad)
-            self.ntokens = (self.trg_y != pad).data.sum() # 也没算第一个token
+            self.ntokens = (self.trg_y != pad).data.sum()  # 是整个batch全部的token数量，也没算每行的第一个token
 
     @staticmethod
     def make_std_mask(tgt, pad):
@@ -430,6 +437,7 @@ def get_std_opt(model):
 # plt.plot(np.arange(1, 20000), [[opt.rate(i) for opt in opts] for i in range(1, 20000)])
 # plt.legend(["512:4000", "512:8000", "256:4000"])
 # plt.show()
+# None
 
 
 # 5.4 Regularization
@@ -450,14 +458,153 @@ class LabelSmoothing(nn.Module):
 
     def forward(self, x, target):
         assert x.size(1) == self.size  # 这里x.size(1)不是每句话的token数量么？
+        # 下面的例子里面传入的x貌似是模型decoder的预测结果，是已经从num_token中选出了作为预测结果的那个，
+        # 所以x.size是（batch_size,vocab_size)，且其中的值不是概率而是概率的log值，这点似乎与Generator类中linear后面接log_softmax层保持了某种程度上的统一性
+        # 这里self.size也应是vocab_size，不是d_model哦
+        # 而例子中target是个1d列表，其中每个值表示正确答案在vocab中的序号，其size应该是batch_size
         true_dist = x.data.clone()
         true_dist.fill_(self.smoothing / (self.size - 2))  # 为何减去2？<BOS><EOS>？
+        # 在例子中正好减去了对应预测结果的每行头尾的两个概率0，不知道为什么预测输出的概率会是这种形式
         true_dist.scatter_(1, target.data.unsqueeze(1), self.confidence)
+        # torch.Tensor.scatter_()函数的作用数学公式上理解了，但是如何利用它进行label smoothing还是没有从物理意义上理解？
+        # 看了例子貌似理解了，他就是将target对应的正确答案的index对应的entity的概率设为confidence
+        # 但是存在问题是，smooth分配的时候减去了2个元素，虽然正确答案本身重新赋值confidence（scatter_()的参数reduce并没有设置为add）
+        # 所以每一行的概率和不是1，多出一个（smoothing / (size - 2)），如果按照（正确答案的smooth应该被所有候选包括正确答案自己平分的话，scatter_()的参数reduce设置为add）
+        # 这样就会多出两个值使得概率和大于1（2 * smoothing / (size - 2)）
         true_dist[:, self.padding_idx] = 0
+        # 哦，这里动手了，将padding_idx的列设为0，就减去了多余的那一个值，现在每一行的概率和是1了
+        # 但是为什么呢？因为这列是padding？
+        # 所以是例子简化了，正常smooth均分的时候size需要减去（padding个数+1）？
         mask = torch.nonzero(target.data == self.padding_idx)
+        # mask指示target中正确答案其实是padding的index
         if mask.dim() > 0:
-            true_dist.index_fill_(0, mask.squeeze(), 0.0)
+            true_dist.index_fill_(0, mask.squeeze(), 0.0)  # 将mask指示的行的概率全部置为0
         self.true_dist = true_dist
         return self.criterion(x, Variable(true_dist, requires_grad=False))
+        # 返回值是预测值x与label smooth后的ground truth值target之间的KLDivLoss损失值
 
 
+# # Example of label smoothing.
+# crit = LabelSmoothing(5, 0, 0.4)
+# predict = torch.FloatTensor([[0, 0.2, 0.7, 0.1, 0],
+#                              [0, 0.2, 0.7, 0.1, 0],
+#                              [0, 0.2, 0.7, 0.1, 0]])
+# v = crit(Variable(predict.log()),
+#          Variable(torch.LongTensor([2, 1, 0])))
+#
+# # Show the target distributions expected by the system.
+# plt.imshow(crit.true_dist)
+# plt.show()
+# # 此时crit.true_dist =
+# # tensor([[0.0000, 0.1333, 0.6000, 0.1333, 0.1333],
+# #         [0.0000, 0.6000, 0.1333, 0.1333, 0.1333],
+# #         [0.0000, 0.0000, 0.0000, 0.0000, 0.0000]])
+# # 所以图示第一列和最后一行都是紫色代表0，正确答案对应的点是黄色0.6，其余是smooth的蓝色0.13
+# # None
+
+# # label smoothing的另一个例子
+# crit = LabelSmoothing(5, 0, 0.1)
+# def loss(x):
+#     d = x + 3 * 1
+#     predict = torch.FloatTensor([[0, x / d, 1 / d, 1 / d, 1 / d],
+#                                  ])
+#     #print(predict)
+#     return crit(Variable(predict.log()),
+#                  Variable(torch.LongTensor([1]))).data
+# plt.plot(np.arange(1, 100), [loss(x) for x in range(1, 100)])
+# # 这个例子里面只有一个sample，且预测的答案是正确的，随着x的增大，即模型对正确答案越来越确定，loss极速下降，而后缓慢回升
+# # 说明标签平滑实际上开始惩罚模型如果它对一个给定的选择非常自信。
+# plt.show()
+# None
+
+
+# A First Example-----------------------------------------
+# 复制任务，输入来自小词汇表的随机符号，希望模型输出相同的符号
+
+# Synthetic Data
+def data_gen(V, batch, nbatches):
+    "Generate random data for a src-tgt copy task."
+
+    r"""
+    参数：
+        V (int)：词汇表的size（词的数量）
+        batch (int)：每个batch中sample（sentence）的数量
+        nbatches (int)：batch的数量
+    """
+
+    for i in range(nbatches):
+        data = torch.from_numpy(np.random.randint(1, V, size=(batch, 10)))
+        data[:, 0] = 1  # 为何要将第一个token统一设置为1？
+        # src = Variable(data, requires_grad=False)
+        # tgt = Variable(data, requires_grad=False)
+        src = Variable(data, requires_grad=False).long()  # size=(30,10)
+        tgt = Variable(data, requires_grad=False).long()
+        yield Batch(src, tgt, 0)
+
+
+# Loss Computation
+class SimpleLossCompute:
+    "A simple loss compute and train function."
+
+    r"""
+    参数：
+        generator：
+        criterion：
+        opt：
+    """
+
+    def __init__(self, generator, criterion, opt=None):
+        self.generator = generator
+        self.criterion = criterion
+        self.opt = opt
+
+    def __call__(self, x, y, norm):
+        x = self.generator(x)
+        loss = self.criterion(x.contiguous().view(-1, x.size(-1)),
+                              y.contiguous().view(-1)) / norm
+        loss.backward()
+        if self.opt is not None:
+            self.opt.step()
+            self.opt.optimizer.zero_grad()
+        # return loss.data[0] * norm
+        return loss.data * norm
+
+
+# Greedy Decoding
+# Train the simple copy task.
+V = 11
+criterion = LabelSmoothing(size=V, padding_idx=0, smoothing=0.0)
+model = make_model(V, V, N=2)
+model_opt = NoamOpt(model.src_embed[0].d_model, 1, 400,
+        torch.optim.Adam(model.parameters(), lr=0, betas=(0.9, 0.98), eps=1e-9))
+
+for epoch in range(10):
+    model.train()
+    run_epoch(data_gen(V, 30, 20), model,
+              SimpleLossCompute(model.generator, criterion, model_opt))
+    model.eval()
+    print(run_epoch(data_gen(V, 30, 5), model,
+                    SimpleLossCompute(model.generator, criterion, None)))
+
+
+def greedy_decode(model, src, src_mask, max_len, start_symbol):
+    memory = model.encode(src, src_mask)
+    ys = torch.ones(1, 1).fill_(start_symbol).type_as(src.data)
+    for i in range(max_len-1):
+        out = model.decode(memory, src_mask,
+                           Variable(ys),
+                           Variable(subsequent_mask(ys.size(1))
+                                    .type_as(src.data)))
+        prob = model.generator(out[:, -1])
+        _, next_word = torch.max(prob, dim = 1)
+        next_word = next_word.data[0]
+        ys = torch.cat([ys,
+                        torch.ones(1, 1).type_as(src.data).fill_(next_word)], dim=1)
+    return ys
+
+model.eval()
+src = Variable(torch.LongTensor([[1,2,3,4,5,6,7,8,9,10]]) )
+src_mask = Variable(torch.ones(1, 1, 10) )
+print(greedy_decode(model, src, src_mask, max_len=10, start_symbol=1))
+
+# A First Example END----------------------------------------
