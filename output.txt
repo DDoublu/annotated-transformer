@@ -1,0 +1,31 @@
+Epoch Step: 1 Loss: 3.178741 Tokens per Sec: 155.431519  # 训练epoch的某step平均预测每个token的loss
+Epoch Step: 1 Loss: 1.859887 Tokens per Sec: 254.342453  # 测试epoch的某step平均预测每个token的loss
+tensor(1.8614) # 测试epoch的平均预测每个token的loss
+Epoch Step: 1 Loss: 1.986429 Tokens per Sec: 153.574844
+Epoch Step: 1 Loss: 1.518838 Tokens per Sec: 255.667191
+tensor(1.5582)
+Epoch Step: 1 Loss: 1.814207 Tokens per Sec: 158.163193
+Epoch Step: 1 Loss: 1.161600 Tokens per Sec: 252.794525
+tensor(1.1853)
+Epoch Step: 1 Loss: 1.868989 Tokens per Sec: 152.146835
+Epoch Step: 1 Loss: 1.048838 Tokens per Sec: 244.329910
+tensor(1.0655)
+Epoch Step: 1 Loss: 1.372122 Tokens per Sec: 160.561737
+Epoch Step: 1 Loss: 0.792614 Tokens per Sec: 243.448669
+tensor(0.8853)
+Epoch Step: 1 Loss: 0.937900 Tokens per Sec: 151.379059
+Epoch Step: 1 Loss: 0.451433 Tokens per Sec: 253.506607
+tensor(0.5193)
+Epoch Step: 1 Loss: 0.597597 Tokens per Sec: 169.801620
+Epoch Step: 1 Loss: 0.366033 Tokens per Sec: 255.183884
+tensor(0.3642)
+Epoch Step: 1 Loss: 0.424538 Tokens per Sec: 164.825729
+Epoch Step: 1 Loss: 0.185708 Tokens per Sec: 248.147583
+tensor(0.1810)
+Epoch Step: 1 Loss: 0.511121 Tokens per Sec: 169.961945
+Epoch Step: 1 Loss: 0.189259 Tokens per Sec: 231.945496
+tensor(0.2467)
+Epoch Step: 1 Loss: 0.698199 Tokens per Sec: 165.128159
+Epoch Step: 1 Loss: 0.220000 Tokens per Sec: 229.091644
+tensor(0.2045)  # 截止这里是10个epoch，其中每个epoch包含{20 batch的训练epoch和5 batch的测试epoch}
+tensor([[ 1,  2,  3,  4,  5,  6,  7,  8,  9, 10]])

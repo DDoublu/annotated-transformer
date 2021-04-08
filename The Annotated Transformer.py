@@ -1,3 +1,21 @@
+r"""
+paper:
+    Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N. Gomez, Lukasz Kaiser, and Illia
+    Polosukhin. 2017. Attention Is All You Need. arXiv:1706.03762 [cs] (December 2017). Retrieved June 11,
+    2020 from http://arxiv.org/abs/1706.03762
+注释数量符号说明：
+    epoch: 一个epoch，所有的数据循环训练一遍
+    nbatches: 一个epoch中batch的数量（下面代码中有时指数据迭代器生成的batch的数量）
+    batch_size: 一个batch中sample（sentence）的数量，即训练数据的数量=nbatches*batch_size
+    src_vcab: 源语言（encoder的input）词汇表的大小
+    tgt_vcab：目标语言（decoder的output）词汇表的大小
+    token: 英文的 word 或者 word piece（与具体应用和算法的设计有关），中文分词后的词组或者短语（不是单个汉字字符character）
+    sample（sentence）：翻译任务的话就是一对英译法的句子，（英，法）
+    ntokens: 一个sentence中输入或者输出的token的数量，一般数量不统一，可能会利用padding进行长度统一（在下面代码中有时候用来
+    指一个batch中需要预测的token总数量）
+    src_ntokens: 一个sample中encoder输入的token的数量
+    tgt_ntokens: 一个sample中decoder预测输出的token的数量
+"""
 import numpy as np
 import torch
 import torch.nn as nn
@@ -19,8 +37,7 @@ r"""
 
 class EncoderDecoder(nn.Module):
     """
-    A standard Encoder-Decoder architecture. Base for this and many
-    other models.
+    A standard Encoder-Decoder architecture. Base for this and many other models.
     """
 
     def __init__(self, encoder, decoder, src_embed, tgt_embed, generator):
@@ -31,7 +48,7 @@ class EncoderDecoder(nn.Module):
         self.tgt_embed = tgt_embed
         self.generator = generator
 
-    def forward(self, src, tgt, src_mask, tgt_mask):  # 没用到generator？
+    def forward(self, src, tgt, src_mask, tgt_mask):
         "Take in and process masked src and target sequences."
         return self.decode(self.encode(src, src_mask), src_mask,
                            tgt, tgt_mask)
@@ -50,7 +67,9 @@ class Generator(nn.Module):
         self.proj = nn.Linear(d_model, vocab)
 
     def forward(self, x):
-        return F.log_softmax(self.proj(x), dim=-1)  # 此处使用log_softmax（$\text{LogSoftmax}(x_{i}) = \log\left(\frac{\exp(x_i) }{ \sum_j \exp(x_j)} \right)$）作为激活函数的目的是什么？
+        return F.log_softmax(self.proj(x), dim=-1)
+        # 此处使用log_softmax（$\text{LogSoftmax}(x_{i}) = \log\left(\frac{\exp(x_i) }{ \sum_j \exp(x_j)} \right)$）
+        # 作为激活函数的目的是什么？
 
 
 # 3.1 Encoder and Decoder Stacks
@@ -120,8 +139,13 @@ class EncoderLayer(nn.Module):
 
     def forward(self, x, mask):
         "Follow Figure 1 (left) for connections."
-        x = self.sublayer[0](x, lambda x: self.self_attn(x, x, x, mask))
-        return self.sublayer[1](x, self.feed_forward)
+        x = self.sublayer[0](x, lambda x: self.self_attn(x, x, x, mask))  # 第一个子层是self_attn
+        # 这里第二个参数不应该是层对象么？为何同时传输参数，得到的不就是MultiHeadAttention forward函数的返回值，
+        # 是torch.Tensor了么？与下一句的传输参数类型不同啊？
+        # nonono，上面理解错了，这里的第二个参数是函数本身，而不是函数的返回值
+        return self.sublayer[1](x, self.feed_forward)  # 第二个子层是feed_forward
+        # sublayer 是 SublayerConnection 对象的 ModuleList，而子层中核心是什么取决于调用SublayerConnection 的 forward函数时，
+        # 传输的第二个参数（该参数是一个继承nn.Model的层）
 
 
 # Decoder
@@ -160,7 +184,11 @@ class DecoderLayer(nn.Module):
 
 
 def subsequent_mask(size):
+    r"""
     "Mask out subsequent positions."
+    :param size: (int) 需要产生的mask的尺寸边长
+    :return: (torch.Tensor) 返回shape=(1,size,size)的tensor，其元素mask[0]是方形的下三角（包含主对角线）全True其余全False的矩阵
+    """
     attn_shape = (1, size, size)
     subsequent_mask = np.triu(np.ones(attn_shape), k=1).astype('uint8')
     return torch.from_numpy(subsequent_mask) == 0
@@ -174,12 +202,33 @@ def subsequent_mask(size):
 # 3.2 Attention
 # 3.2.1 Scaled Dot-Product Attention
 def attention(query, key, value, mask=None, dropout=None):
+    r"""
     "Compute 'Scaled Dot Product Attention'"
+    :param query: (torch.Tensor) shape=(batch_size,nheads,q.ntokens,d_model/nheads)
+    :param key: (torch.Tensor) shape=(batch_size,nheads,k.ntokens,d_model/nheads)
+    :param value: (torch.Tensor) shape=(batch_size,nheads,k.ntokens,d_model/nheads)
+    k.ntokens=v.ntokens，就是MultiHeadAttention中传入的k和v的size(1)，就是一个sample中src或者tgt的token的数量；q.token同理
+    :param mask: (torch.Tensor) mask是和kv相关的mask，而不是与q相关。所以若是src_mask，其shape=(batch_size,1,k.ntokens);
+    若是tgt_mask，其shape=(batch_size,k.ntokens,k.ntokens)
+    :param dropout: (nn.Dropout) nn.Dropout层
+    :return: (torch.Tensor) 返回的是计算后加权和向量shape=(batch_size,nheads,q.ntokens,d_model/nheads),
+    和注意力权重shape=(batch_size,nheads,q.ntokens,k.ntokens)
+    """
     d_k = query.size(-1)
     scores = torch.matmul(query, key.transpose(-2, -1)) \
              / math.sqrt(d_k)
     if mask is not None:
         scores = scores.masked_fill(mask == 0, -1e9)
+        # 在decoder的masked Multi-Head Attention模块中该操作使得信息永远不能向左传播，其作用具体体现在两个层面：
+        # 1）预测第i个token的时候，因为训练模式是将ground truth一次性输入，mask使得无法看到第i个token及之后的信息，
+        # 防止利用自己预测自己，这点在测试模式下并没有意义，因为即将预测的token根本不知道，也并没有输入；
+        # 2）当预测第i个token时，前面token的加权和计算中也都值能attend到自己之前的token，
+        # 这一点无论是在训练模式还是测试模式下都存在。具体举一个例子，当预测第6个token时，计算第3个token只能attend到0-3个token，
+        # 第5个token的加权和只能attend0-5个token，这样的编码结果有点像单向的lstm，你可能会说反正最后用于预测第6个token利用的也是
+        # 第5个token的加权和，其余的无所谓，但我们考虑最后一层N=6时第5个token的加权和attend的是上一层N=5得出的0-5的token的加权和，
+        # 这样前面加权和的计算就对其有影响了。但我觉得第一个层面的mask是有意义的，第二个层面的mask真的需要么？
+        # 或者这就是所谓的auto-regressive property，那BiLSTM就没有保持这种属性了？但因为训练时就是这样mask的，
+        # 所以也无法单独在测试时让mask=NONE？这是否只是该版本代码实现方面存在的问题？论文中的原意是怎样呢？具体到预测效果会有影响么？
     p_attn = F.softmax(scores, dim = -1)
     if dropout is not None:
         p_attn = dropout(p_attn)
@@ -200,7 +249,7 @@ class MultiHeadedAttention(nn.Module):
         self.d_k = d_model // h
         self.h = h
         self.linears = clones(nn.Linear(d_model, d_model), 4)
-        self.attn = None
+        self.attn = None  # 存储返回的attention权重
         self.dropout = nn.Dropout(p=dropout)
 
     def forward(self, query, key, value, mask=None):
@@ -208,7 +257,7 @@ class MultiHeadedAttention(nn.Module):
         if mask is not None:
             # Same mask applied to all h heads.
             mask = mask.unsqueeze(1)  # 函数subsequent_mask产生的mask的dim=3，这里为了一次性用于多头，增加了一个维度
-        nbatches = query.size(0)
+        nbatches = query.size(0)  # 这里nbatches指的是每个batch的sample的数量，即batch_size
 
         # 1) Do all the linear projections in batch from d_model => h x d_k
         query, key, value = \
@@ -221,6 +270,8 @@ class MultiHeadedAttention(nn.Module):
         # 2) Apply attention on all the projected vectors in batch.
         x, self.attn = attention(query, key, value, mask=mask,
                                  dropout=self.dropout)
+        # self.attn的size是(batch_size,nheads,q.size(1),k.size(1))， q.size(1)是作为q的ntokens，k.size(1)是作为k的ntokens，
+        # 存储的是注意力权重
 
         # 3) "Concat" using a view and apply a final linear.
         x = x.transpose(1, 2).contiguous() \
@@ -325,14 +376,15 @@ def make_model(src_vocab, tgt_vocab, N=6,
 class Batch:
     "Object for holding a batch of data with mask during training."
 
-    r"""
-    参数：
-        src (torch.Tensor)：模型的输入（英译法任务中输入的英文句子），shape=(batch，ntokens)
-        trg (torch.Tensor)：模型的输出（ground truth，英译法任务中标准答案的法语句子），训练时可指定，预测时为None。
-        pad (int)：padding的填充值？但是前面构造数据的时候明明在每个sample的第0个token填充的1
-    """
-
     def __init__(self, src, trg=None, pad=0):
+        r"""
+
+        :param src: (torch.Tensor) 模型的输入（英译法任务中输入的英文句子），shape=(batch，ntokens)
+        :param trg: (torch.Tensor) 模型的输出（ground truth，英译法任务中标准答案的法语句子），训练时可指定，预测时为None。
+        :param pad: (int) padding的填充值？但是前面构造数据的时候明明在每个sample的第0个token填充的1，
+        可能1不是padding，但是LabelSmoothing类实例化criterion时padding_idx参数赋值是0，而数据第0个位置就是1，如何解释？
+        greedy_decode函数传输参数start_symbol=1，所以0和1到底谁是padding？
+        """
         self.src = src
         self.src_mask = (src != pad).unsqueeze(-2)
         if trg is not None: # 训练时trg不是None
@@ -345,23 +397,36 @@ class Batch:
     @staticmethod
     def make_std_mask(tgt, pad):
         "Create a mask to hide padding and future words."
-        tgt_mask = (tgt != pad).unsqueeze(-2)
+        tgt_mask = (tgt != pad).unsqueeze(-2)  # 隐藏padding
         tgt_mask = tgt_mask & Variable(
-            subsequent_mask(tgt.size(-1)).type_as(tgt_mask.data))  # 此处&操作尺寸不匹配可以广播
+            subsequent_mask(tgt.size(-1)).type_as(tgt_mask.data))
+        # padding mask 和 sequence mask 联合，此处&操作尺寸不匹配可以广播
         return tgt_mask
-
+        # 训练模式tgt_mask需要两部分相与，padding mask和sequence mask；
+        # 若是测试模式，sequence mask是不需要的，而padding mask貌似也不需要？【待确定】
+        # 我理解的是这样，但是该版本代码并不是这样执行的，具体可见attention函数中有关mask的使用部分的说明
 
 # Training Loop
 def run_epoch(data_iter, model, loss_compute):
-    "Standard Training and Logging Function"
+    r"""
+
+    Standard Training and Logging Function
+
+    :param data_iter: (generator) 数据生成迭代器
+    :param model: (EncoderDecoder) Transformer 模型
+    :param loss_compute: (SimpleLossCompute) loss计算，反向传播，优化器更新参数等
+    :return: (torch.Tensor) 当前epoch平均预测每个token的loss
+    """
+
     start = time.time()
     total_tokens = 0
     total_loss = 0
     tokens = 0
     for i, batch in enumerate(data_iter):  # 为何没有参数更新的操作？
         out = model.forward(batch.src, batch.trg,
-                            batch.src_mask, batch.trg_mask)  # out没有输出最终的预测结果啊，后面如何用它来计算loss？
-        loss = loss_compute(out, batch.trg_y, batch.ntokens) # 当然loss_compute函数也没有写明
+                            batch.src_mask, batch.trg_mask)
+        # out是decoder的输出，不是最终的预测结果啊，后续在SimpleLossCompute中输出预测，具体其实是利用Generator层输出对应tgt_vcab的概率
+        loss = loss_compute(out, batch.trg_y, batch.ntokens)  # 该batch全部token的loss值
         total_loss += loss
         total_tokens += batch.ntokens
         tokens += batch.ntokens
@@ -369,9 +434,9 @@ def run_epoch(data_iter, model, loss_compute):
             elapsed = time.time() - start
             print("Epoch Step: %d Loss: %f Tokens per Sec: %f" %
                     (i, loss / batch.ntokens, tokens / elapsed))
-            # 输出当前epoch的step(batch)序号，当前step(batch)平均预测每个token的loss，近50个step(batch)平均预测每个token用时
-            start = time.time()
-            tokens = 0
+            # 输出当前epoch的step(batch)序号，当前step(batch)平均预测每个token的loss，单位时间平均预测的token数量
+            start = time.time()  # 计时器归零
+            tokens = 0  # token计数器归零
     return total_loss / total_tokens  # 当前epoch平均预测每个token的loss
 
 
@@ -448,8 +513,15 @@ class LabelSmoothing(nn.Module):
     "Implement label smoothing."
 
     def __init__(self, size, padding_idx, smoothing=0.0):
+        r"""
+
+        :param size:
+        :param padding_idx:
+        :param smoothing:
+        """
         super(LabelSmoothing, self).__init__()
-        self.criterion = nn.KLDivLoss(size_average=False)
+        # self.criterion = nn.KLDivLoss(size_average=False)
+        self.criterion = nn.KLDivLoss(reduction='sum')
         self.padding_idx = padding_idx
         self.confidence = 1.0 - smoothing
         self.smoothing = smoothing
@@ -457,11 +529,13 @@ class LabelSmoothing(nn.Module):
         self.true_dist = None
 
     def forward(self, x, target):
-        assert x.size(1) == self.size  # 这里x.size(1)不是每句话的token数量么？
-        # 下面的例子里面传入的x貌似是模型decoder的预测结果，是已经从num_token中选出了作为预测结果的那个，
-        # 所以x.size是（batch_size,vocab_size)，且其中的值不是概率而是概率的log值，这点似乎与Generator类中linear后面接log_softmax层保持了某种程度上的统一性
-        # 这里self.size也应是vocab_size，不是d_model哦
-        # 而例子中target是个1d列表，其中每个值表示正确答案在vocab中的序号，其size应该是batch_size
+        r"""
+
+        :param x: (torch.Tensor) Generator生成的log_softmax概率结果，shape=(batch_size*tgt_ntokens, tgt_vcab)
+        :param target:(torch.Tensor) ground truth，具体是正确答案在tgt_vcab中的index，shape=(batch_size*tgt_ntokens)
+        :return: (torch.Tensor) 预测值x与label Smoothing后的target值之间的KLDivLoss损失
+        """
+        assert x.size(1) == self.size
         true_dist = x.data.clone()
         true_dist.fill_(self.smoothing / (self.size - 2))  # 为何减去2？<BOS><EOS>？
         # 在例子中正好减去了对应预测结果的每行头尾的两个概率0，不知道为什么预测输出的概率会是这种形式
@@ -475,6 +549,7 @@ class LabelSmoothing(nn.Module):
         # 哦，这里动手了，将padding_idx的列设为0，就减去了多余的那一个值，现在每一行的概率和是1了
         # 但是为什么呢？因为这列是padding？
         # 所以是例子简化了，正常smooth均分的时候size需要减去（padding个数+1）？
+        # 【0407更新】最新的理解是，smooth均分的时候减去的分别是 正确答案自己+padding
         mask = torch.nonzero(target.data == self.padding_idx)
         # mask指示target中正确答案其实是padding的index
         if mask.dim() > 0:
@@ -523,13 +598,14 @@ class LabelSmoothing(nn.Module):
 
 # Synthetic Data
 def data_gen(V, batch, nbatches):
+    r"""
+
     "Generate random data for a src-tgt copy task."
 
-    r"""
-    参数：
-        V (int)：词汇表的size（词的数量）
-        batch (int)：每个batch中sample（sentence）的数量
-        nbatches (int)：batch的数量
+    :param V: (int) 词汇表的size（词的数量）
+    :param batch:  (int) 每个batch中sample（sentence）的数量
+    :param nbatches: (int)batch的数量
+    :return:
     """
 
     for i in range(nbatches):
@@ -545,39 +621,50 @@ def data_gen(V, batch, nbatches):
 # Loss Computation
 class SimpleLossCompute:
     "A simple loss compute and train function."
-
-    r"""
-    参数：
-        generator：
-        criterion：
-        opt：
-    """
+    "generator生成预测值，criterion loss计算，反向传播，优化器opt更新参数"
 
     def __init__(self, generator, criterion, opt=None):
+        r"""
+
+        :param generator: (Generator) Linear+log_softmax，将decoder的输出转换成预测结果
+        :param criterion: (LabelSmoothing) 标签平滑，计算KLDivLoss
+        :param opt: (NoamOpt) 优化器，计算学习率
+        """
         self.generator = generator
         self.criterion = criterion
         self.opt = opt
 
     def __call__(self, x, y, norm):
+        r"""
+        generator生成预测值，criterion loss计算，反向传播，优化器opt更新参数
+        :param x: (torch.Tensor) 模型decoder的输出，shape=(batch_size, tgt_ntokens, d_model)
+        :param y: (torch.Tensor) 模型输出的ground truth，shape=(batch_size, tgt_ntokens)，元素y[i,j]代表的是正确答案在tgt_vcab中的index
+        :param norm: (torch.Tensor) 这里传输进来的是该batch预测的token的总数量，即 (batch_size * tgt_ntokens)
+        :return: (torch.Tensor)  返回该batch的全部token（即为batch_size * tgt_ntokens个token）预测的loss值
+        """
         x = self.generator(x)
+        # 经过Generator层后shape=(batch_size, tgt_ntokens, tgt_vcab)，元素x[i,j]是长度为tgt_vcab的向量，
+        # 其每一维度代表对应tgt token的概率，一般选取最高的作为预测值
         loss = self.criterion(x.contiguous().view(-1, x.size(-1)),
                               y.contiguous().view(-1)) / norm
+        # self.criterion是定义的loss函数，调用其forward方法，计算x和y之间具体的loss值，除以norm是预测的数量，得到平均每个token的loss
         loss.backward()
         if self.opt is not None:
             self.opt.step()
             self.opt.optimizer.zero_grad()
         # return loss.data[0] * norm
-        return loss.data * norm
+        return loss.data * norm  # 上面除以norm，这里又乘以norm，是为何？
 
 
 # Greedy Decoding
 # Train the simple copy task.
-V = 11
-criterion = LabelSmoothing(size=V, padding_idx=0, smoothing=0.0)
-model = make_model(V, V, N=2)
+V = 11  # 这里是src_vcab=tgt_vcab=V
+criterion = LabelSmoothing(size=V, padding_idx=0, smoothing=0.0)  # 构建loss函数
+model = make_model(V, V, N=2)  # 构建模型
 model_opt = NoamOpt(model.src_embed[0].d_model, 1, 400,
-        torch.optim.Adam(model.parameters(), lr=0, betas=(0.9, 0.98), eps=1e-9))
+        torch.optim.Adam(model.parameters(), lr=0, betas=(0.9, 0.98), eps=1e-9))  # 构建优化器
 
+# 开始训练，每个epoch包含{20 batch的训练epoch和5 batch的测试epoch}
 for epoch in range(10):
     model.train()
     run_epoch(data_gen(V, 30, 20), model,
@@ -590,21 +677,26 @@ for epoch in range(10):
 def greedy_decode(model, src, src_mask, max_len, start_symbol):
     memory = model.encode(src, src_mask)
     ys = torch.ones(1, 1).fill_(start_symbol).type_as(src.data)
-    for i in range(max_len-1):
+    for i in range(max_len):
         out = model.decode(memory, src_mask,
                            Variable(ys),
                            Variable(subsequent_mask(ys.size(1))
                                     .type_as(src.data)))
         prob = model.generator(out[:, -1])
-        _, next_word = torch.max(prob, dim = 1)
+        # Important！ 预测就是利用的输入的最后一个词作为q所对应的输出，那其实前面词的注意力得分、权重、加权和本没不必要计算啊？
+        # 其实不是的，因为N=6，每一层要在上一层的基础上进行attend计算，如果说没必要的话，
+        # 只能在最后一层（最后一个DecoderLayer的第一个sublayer的MultiHeadAttention中只计算最后一个词作为q的加权和，
+        # 第二个子层的一般注意力是attend的memory，不受影响，或许过一些线性层本身就是并列通过的也没有影响）的计算中予以省略，
+        # 但是这样增加了算法复杂度实在没必要了
+        _, next_word = torch.max(prob, dim = 1)  #返回的是（最大的值，最大值的index）
         next_word = next_word.data[0]
         ys = torch.cat([ys,
                         torch.ones(1, 1).type_as(src.data).fill_(next_word)], dim=1)
     return ys
-
+# 模型训练完成，开始测试评估
 model.eval()
-src = Variable(torch.LongTensor([[1,2,3,4,5,6,7,8,9,10]]) )
-src_mask = Variable(torch.ones(1, 1, 10) )
+src = Variable(torch.LongTensor([[1,2,3,4,5,6,7,8,9,10]]))
+src_mask = Variable(torch.ones(1, 1, 10))
 print(greedy_decode(model, src, src_mask, max_len=10, start_symbol=1))
 
 # A First Example END----------------------------------------
