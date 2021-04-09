@@ -7,8 +7,8 @@ paper:
     epoch: 一个epoch，所有的数据循环训练一遍
     nbatches: 一个epoch中batch的数量（下面代码中有时指数据迭代器生成的batch的数量）
     batch_size: 一个batch中sample（sentence）的数量，即训练数据的数量=nbatches*batch_size
-    src_vcab: 源语言（encoder的input）词汇表的大小
-    tgt_vcab：目标语言（decoder的output）词汇表的大小
+    src_vocab: 源语言（encoder的input）词汇表的大小
+    tgt_vocab：目标语言（decoder的output）词汇表的大小
     token: 英文的 word 或者 word piece（与具体应用和算法的设计有关），中文分词后的词组或者短语（不是单个汉字字符character）
     sample（sentence）：翻译任务的话就是一对英译法的句子，（英，法）
     ntokens: 一个sentence中输入或者输出的token的数量，一般数量不统一，可能会利用padding进行长度统一（在下面代码中有时候用来
@@ -29,9 +29,9 @@ seaborn.set_context(context="talk")
 
 # 3 Model Architecture
 r"""
-# encoder的输入是 $x_1, \ldots, x_n$；输出是 $z_1, \ldots, z_n$
-# decoder的输出是 $y_1, \ldots, y_m$，一次输出一个element；
-# decoder的输入除了encoder的输出外，额外增加前面step生成的所有element，用于生成next
+encoder的输入是 $x_1, \ldots, x_n$；输出是 $z_1, \ldots, z_n$
+decoder的输入除了encoder的输出外，额外增加前面step生成的所有element，用于生成next
+decoder的输出是 $y_1, \ldots, y_m$，一次输出一个element；（实际输出和输入的数量也是相同的，只不过用于预测只选择最后一个而已）
 """
 
 
@@ -41,6 +41,13 @@ class EncoderDecoder(nn.Module):
     """
 
     def __init__(self, encoder, decoder, src_embed, tgt_embed, generator):
+        r"""Transformer的基础架构
+        :param encoder: (Encoder) 实现Transformer的encoder
+        :param decoder: (Decoder) 实现Transformer的decoder
+        :param src_embed: (Sequential) 实现Transformer encoder前的embedding层以及add Positional Encoding操作
+        :param tgt_embed: (Sequential) 实现Transformer decoder前的embedding层以及add Positional Encoding操作
+        :param generator: (Generator) 实现将Transformer decoder的输出转换成预测的操作
+        """
         super(EncoderDecoder, self).__init__()
         self.encoder = encoder
         self.decoder = decoder
@@ -50,8 +57,7 @@ class EncoderDecoder(nn.Module):
 
     def forward(self, src, tgt, src_mask, tgt_mask):
         "Take in and process masked src and target sequences."
-        return self.decode(self.encode(src, src_mask), src_mask,
-                           tgt, tgt_mask)
+        return self.decode(self.encode(src, src_mask), src_mask, tgt, tgt_mask)
 
     def encode(self, src, src_mask):
         return self.encoder(self.src_embed(src), src_mask)
@@ -63,20 +69,29 @@ class EncoderDecoder(nn.Module):
 class Generator(nn.Module):
     "Define standard linear + softmax generation step."
     def __init__(self, d_model, vocab):
+        r"""将decoder输出的d_model长度向量转换成目标词表的vocab长度向量，即预测值
+        :param d_model: (int) 模型的size
+        :param vocab: (int) tgt_vocab的size
+        """
         super(Generator, self).__init__()
         self.proj = nn.Linear(d_model, vocab)
 
     def forward(self, x):
         return F.log_softmax(self.proj(x), dim=-1)
         # 此处使用log_softmax（$\text{LogSoftmax}(x_{i}) = \log\left(\frac{\exp(x_i) }{ \sum_j \exp(x_j)} \right)$）
-        # 作为激活函数的目的是什么？
+        # 作为激活函数的目的是什么？（A: 使概率在对数空间？）
 
 
 # 3.1 Encoder and Decoder Stacks
 # Encoder
 
 def clones(module, N):
+    r"""
     "Produce N identical layers."
+    :param module: 需要复制的层
+    :param N: (int) 复制的个数
+    :return: (ModuleList) 含有N个module的ModuleList
+    """
     return nn.ModuleList([copy.deepcopy(module) for _ in range(N)])
 
 
@@ -84,6 +99,10 @@ class Encoder(nn.Module):
     "Core encoder is a stack of N layers"
 
     def __init__(self, layer, N):
+        r"""Encoder是由N个完全相同的layer组成，然后加上一个norm层
+        :param layer: 完全相同的layer
+        :param N: (int) 相同的layer的个数
+        """
         super(Encoder, self).__init__()
         self.layers = clones(layer, N)
         self.norm = LayerNorm(layer.size)
@@ -92,7 +111,10 @@ class Encoder(nn.Module):
         "Pass the input (and mask) through each layer in turn."
         for layer in self.layers:
             x = layer(x, mask)
-        return self.norm(x)  # 为什么在经过了N个identical的layer后要加上一个LayerNorm层？（后面解答了）
+        return self.norm(x)  # 为什么在经过了N个identical的layer后要加上一个LayerNorm层？
+        # （A:为了代码的简洁性，该实现代码并没有严格按照论文中所述在子层操作后进行Add&Norm，
+        # 而是先进行Norm然后子层操作后再Add，这样导致最后一层的输出并没有经过Norm操作，
+        # 所以最后加上一个Norm操作）
 
 
 class LayerNorm(nn.Module):
@@ -106,9 +128,10 @@ class LayerNorm(nn.Module):
     def forward(self, x):
         mean = x.mean(-1, keepdim=True)
         std = x.std(-1, keepdim=True)
-        return self.a_2 * (x - mean) / (std + self.eps) + self.b_2  # a_2和b_2的意义是什么？
+        return self.a_2 * (x - mean) / (std + self.eps) + self.b_2
+        # a_2和b_2的意义是什么？
         # 查看其文档字符串貌似是以该方式加入的tensor可作为模型参数参与训练更新所以就是类似Wx+b？
-        # 这里是a_2 x + b_2, 其中，x是减去均值除去标准差之后的规范化后的x
+        # 这里是a_2 y + b_2, 其中，y是减去均值除去标准差之后的规范化的x
 
 
 class SublayerConnection(nn.Module):
@@ -129,7 +152,11 @@ class SublayerConnection(nn.Module):
 
 
 class EncoderLayer(nn.Module):
+    r"""
     "Encoder is made up of self-attn and feed forward (defined below)"
+    每个EncoderLayer包含两个子层，分别是self_attn自注意力子层和feed_forward前馈网络子层
+    """
+
     def __init__(self, size, self_attn, feed_forward, dropout):
         super(EncoderLayer, self).__init__()
         self.self_attn = self_attn
@@ -139,11 +166,13 @@ class EncoderLayer(nn.Module):
 
     def forward(self, x, mask):
         "Follow Figure 1 (left) for connections."
-        x = self.sublayer[0](x, lambda x: self.self_attn(x, x, x, mask))  # 第一个子层是self_attn
+        x = self.sublayer[0](x, lambda x: self.self_attn(x, x, x, mask))
+        # 第一个子层是self_attn
         # 这里第二个参数不应该是层对象么？为何同时传输参数，得到的不就是MultiHeadAttention forward函数的返回值，
         # 是torch.Tensor了么？与下一句的传输参数类型不同啊？
         # nonono，上面理解错了，这里的第二个参数是函数本身，而不是函数的返回值
-        return self.sublayer[1](x, self.feed_forward)  # 第二个子层是feed_forward
+        return self.sublayer[1](x, self.feed_forward)
+        # 第二个子层是feed_forward
         # sublayer 是 SublayerConnection 对象的 ModuleList，而子层中核心是什么取决于调用SublayerConnection 的 forward函数时，
         # 传输的第二个参数（该参数是一个继承nn.Model的层）
 
@@ -425,7 +454,7 @@ def run_epoch(data_iter, model, loss_compute):
     for i, batch in enumerate(data_iter):  # 为何没有参数更新的操作？
         out = model.forward(batch.src, batch.trg,
                             batch.src_mask, batch.trg_mask)
-        # out是decoder的输出，不是最终的预测结果啊，后续在SimpleLossCompute中输出预测，具体其实是利用Generator层输出对应tgt_vcab的概率
+        # out是decoder的输出，不是最终的预测结果啊，后续在SimpleLossCompute中输出预测，具体其实是利用Generator层输出对应tgt_vocab的概率
         loss = loss_compute(out, batch.trg_y, batch.ntokens)  # 该batch全部token的loss值
         total_loss += loss
         total_tokens += batch.ntokens
@@ -531,8 +560,8 @@ class LabelSmoothing(nn.Module):
     def forward(self, x, target):
         r"""
 
-        :param x: (torch.Tensor) Generator生成的log_softmax概率结果，shape=(batch_size*tgt_ntokens, tgt_vcab)
-        :param target:(torch.Tensor) ground truth，具体是正确答案在tgt_vcab中的index，shape=(batch_size*tgt_ntokens)
+        :param x: (torch.Tensor) Generator生成的log_softmax概率结果，shape=(batch_size*tgt_ntokens, tgt_vocab)
+        :param target:(torch.Tensor) ground truth，具体是正确答案在tgt_vocab中的index，shape=(batch_size*tgt_ntokens)
         :return: (torch.Tensor) 预测值x与label Smoothing后的target值之间的KLDivLoss损失
         """
         assert x.size(1) == self.size
@@ -638,12 +667,12 @@ class SimpleLossCompute:
         r"""
         generator生成预测值，criterion loss计算，反向传播，优化器opt更新参数
         :param x: (torch.Tensor) 模型decoder的输出，shape=(batch_size, tgt_ntokens, d_model)
-        :param y: (torch.Tensor) 模型输出的ground truth，shape=(batch_size, tgt_ntokens)，元素y[i,j]代表的是正确答案在tgt_vcab中的index
+        :param y: (torch.Tensor) 模型输出的ground truth，shape=(batch_size, tgt_ntokens)，元素y[i,j]代表的是正确答案在tgt_vocab中的index
         :param norm: (torch.Tensor) 这里传输进来的是该batch预测的token的总数量，即 (batch_size * tgt_ntokens)
         :return: (torch.Tensor)  返回该batch的全部token（即为batch_size * tgt_ntokens个token）预测的loss值
         """
         x = self.generator(x)
-        # 经过Generator层后shape=(batch_size, tgt_ntokens, tgt_vcab)，元素x[i,j]是长度为tgt_vcab的向量，
+        # 经过Generator层后shape=(batch_size, tgt_ntokens, tgt_vocab)，元素x[i,j]是长度为tgt_vocab的向量，
         # 其每一维度代表对应tgt token的概率，一般选取最高的作为预测值
         loss = self.criterion(x.contiguous().view(-1, x.size(-1)),
                               y.contiguous().view(-1)) / norm
@@ -658,7 +687,7 @@ class SimpleLossCompute:
 
 # Greedy Decoding
 # Train the simple copy task.
-V = 11  # 这里是src_vcab=tgt_vcab=V
+V = 11  # 这里是src_vocab=tgt_vocab=V
 criterion = LabelSmoothing(size=V, padding_idx=0, smoothing=0.0)  # 构建loss函数
 model = make_model(V, V, N=2)  # 构建模型
 model_opt = NoamOpt(model.src_embed[0].d_model, 1, 400,
