@@ -553,7 +553,7 @@ class LabelSmoothing(nn.Module):
         r"""
         :param size: (int) tgt_vocab 目标词表的大小
         :param padding_idx: (int) 后面实例化举例时，传输的是0，而例子第0个位置上的token是"1"，所以"1"到底是不是padding？
-        :param smoothing: (float) 标签平滑的参数，其实就是将one-hot中的1挖去的那部分
+        :param smoothing: (float) 标签平滑的参数，其实就是将one-hot中的"1"挖去的那部分
         """
         super(LabelSmoothing, self).__init__()
         # self.criterion = nn.KLDivLoss(size_average=False)
