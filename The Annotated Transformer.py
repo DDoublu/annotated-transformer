@@ -412,8 +412,9 @@ class Batch:
     def __init__(self, src, trg=None, pad=0):
         r"""
 
-        :param src: (torch.Tensor) 模型的输入（英译法任务中输入的英文句子），shape=(batch_size，ntokens)
+        :param src: (torch.Tensor) 模型的输入（英译法任务中输入的英文句子），shape=(batch_size，src_ntokens)
         :param trg: (torch.Tensor) 模型的输出（ground truth，英译法任务中作为正确答案的法语句子），训练时指定，预测时为None。
+        shape=(batch_size，tgt_ntokens)
         :param pad: (int) padding的填充值？但是前面构造数据的时候明明在每个sample的第0个token填充的1，
         可能1不是padding，但是LabelSmoothing类实例化criterion时padding_idx参数赋值是0，而数据第0个位置就是1，如何解释？
         greedy_decode函数传输参数start_symbol=1，所以0和1到底谁是padding？
@@ -455,7 +456,7 @@ def run_epoch(data_iter, model, loss_compute):
     for i, batch in enumerate(data_iter):
         out = model.forward(batch.src, batch.trg,
                             batch.src_mask, batch.trg_mask)
-        # out是decoder的输出，不是最终的预测结果啊，后续在SimpleLossCompute中输出预测，具体其实是利用Generator层输出对应tgt_vocab的概率
+        # out是decoder的输出，不是最终的预测结果啊，后续在 SimpleLossCompute 中输出预测，具体其实是利用Generator层输出对应tgt_vocab的概率
         loss = loss_compute(out, batch.trg_y, batch.ntokens)  # 该batch全部token的loss值
         total_loss += loss
         total_tokens += batch.ntokens
@@ -557,7 +558,7 @@ class LabelSmoothing(nn.Module):
         """
         super(LabelSmoothing, self).__init__()
         # self.criterion = nn.KLDivLoss(size_average=False)
-        self.criterion = nn.KLDivLoss(reduction='sum')
+        self.criterion = nn.KLDivLoss(reduction='sum')   # 实际用来计算loss的对象
         self.padding_idx = padding_idx
         self.confidence = 1.0 - smoothing
         self.smoothing = smoothing
@@ -569,10 +570,10 @@ class LabelSmoothing(nn.Module):
 
         :param x: (torch.Tensor) Generator生成的log_softmax概率结果，shape=(batch_size*tgt_ntokens, tgt_vocab)
         :param target:(torch.Tensor) ground truth，具体是正确答案在tgt_vocab中的index，shape=(batch_size*tgt_ntokens)
-        :return: (torch.Tensor) 预测值x与label Smoothing后的target值之间的KLDivLoss损失
+        :return: (torch.Tensor) 预测值x与label Smoothing后的target值之间的KLDivLoss损失,shape=()（维度为0）
         """
         assert x.size(1) == self.size
-        true_dist = x.data.clone()
+        true_dist = x.data.clone()  # copy之意在于x的shape，而不是x的数据
         true_dist.fill_(self.smoothing / (self.size - 2))  # 为何减去2？<BOS><EOS>？
         # 在例子中正好减去了对应预测结果的每行头尾的两个概率0，不知道为什么预测输出的概率会是这种形式
         true_dist.scatter_(1, target.data.unsqueeze(1), self.confidence)
@@ -585,11 +586,12 @@ class LabelSmoothing(nn.Module):
         # 哦，这里动手了，将padding_idx的列设为0，就减去了多余的那一个值，现在每一行的概率和是1了
         # 但是为什么呢？因为这列是padding？
         # 所以是例子简化了，正常smooth均分的时候size需要减去（padding个数+1）？
-        # 【0407更新】最新的理解是，smooth均分的时候减去的分别是 正确答案自己+padding
+        # 【0407更新】最新的理解是，smooth均分的时候减去的分别是 正确答案自己 和 padding
         mask = torch.nonzero(target.data == self.padding_idx)
-        # mask指示target中正确答案其实是padding的index
+        # mask的作用是指示那些 target中显示是正确答案但其实是padding的 index
         if mask.dim() > 0:
-            true_dist.index_fill_(0, mask.squeeze(), 0.0)  # 将mask指示的行的概率全部置为0
+            true_dist.index_fill_(0, mask.squeeze(), 0.0)
+            # 将mask指示的index作为行索引，将整行的概率全部置为0，因为target指示的正确答案的index是padding，没有了意义（正常应该不会出现该情况）
         self.true_dist = true_dist
         return self.criterion(x, Variable(true_dist, requires_grad=False))
         # 返回值是预测值x与label smooth后的ground truth值target之间的KLDivLoss损失值
@@ -629,36 +631,31 @@ class LabelSmoothing(nn.Module):
 # None
 
 
-# A First Example-----------------------------------------
-# 复制任务，输入来自小词汇表的随机符号，希望模型输出相同的符号
-
-# Synthetic Data
+# A First Example
+# # Synthetic Data
 def data_gen(V, batch, nbatches):
-    r"""
-
-    "Generate random data for a src-tgt copy task."
-
-    :param V: (int) 词汇表的size（词的数量）
-    :param batch:  (int) 每个batch中sample（sentence）的数量
-    :param nbatches: (int)batch的数量
-    :return:
+    r"""Generate random data for a src-tgt copy task.
+    :param V: (int) 词汇表的大小（因为是复制任务，所以src_vocab和tgt_vcab是一样的）
+    :param batch:  (int) 每个batch中sample（sentence）的数量，即batch_size
+    :param nbatches: (int) 一次产生的batch的数量
+    :return:(Batch) 将伪造生成的数据用Batch封装
     """
-
     for i in range(nbatches):
         data = torch.from_numpy(np.random.randint(1, V, size=(batch, 10)))
-        data[:, 0] = 1  # 为何要将第一个token统一设置为1？
+        # 数据范围是[1,V-1]，可看做实际的token2id后，src_ntokens=10
+        data[:, 0] = 1  # 为何要将第一个token统一设置为1？start_symbol设置为1？
         # src = Variable(data, requires_grad=False)
         # tgt = Variable(data, requires_grad=False)
-        src = Variable(data, requires_grad=False).long()  # size=(30,10)
+        src = Variable(data, requires_grad=False).long()  # size=(batch_size,src_ntokens)
         tgt = Variable(data, requires_grad=False).long()
-        yield Batch(src, tgt, 0)
+        yield Batch(src, tgt, 0)  # 第三个参数是指定给pad的
 
 
-# Loss Computation
+# # Loss Computation
 class SimpleLossCompute:
-    "A simple loss compute and train function."
-    "generator生成预测值，criterion loss计算，反向传播，优化器opt更新参数"
-
+    r"""A simple loss compute and train function.
+    generator生成预测值，criterion 具体loss计算，loss反向传播，优化器opt更新参数
+    """
     def __init__(self, generator, criterion, opt=None):
         r"""
         :param generator: (Generator) Linear+log_softmax，将decoder的输出转换成预测结果
@@ -670,16 +667,15 @@ class SimpleLossCompute:
         self.opt = opt
 
     def __call__(self, x, y, norm):
-        r"""
-        generator生成预测值，criterion loss计算，反向传播，优化器opt更新参数
+        r"""generator生成预测值，criterion 具体loss计算，loss反向传播，优化器opt更新参数
         :param x: (torch.Tensor) 模型decoder的输出，shape=(batch_size, tgt_ntokens, d_model)
         :param y: (torch.Tensor) 模型输出的ground truth，shape=(batch_size, tgt_ntokens)，元素y[i,j]代表的是正确答案在tgt_vocab中的index
         :param norm: (torch.Tensor) 这里传输进来的是该batch预测的token的总数量，即 (batch_size * tgt_ntokens)
-        :return: (torch.Tensor)  返回该batch的全部token（即为batch_size * tgt_ntokens个token）预测的loss值
+        :return: (torch.Tensor) 返回该batch的全部token（即为batch_size * tgt_ntokens个token）预测的loss值
         """
         x = self.generator(x)
-        # 经过Generator层后shape=(batch_size, tgt_ntokens, tgt_vocab)，元素x[i,j]是长度为tgt_vocab的向量，
-        # 其每一维度代表对应tgt token的概率，一般选取最高的作为预测值
+        # 经过Generator层后shape=(batch_size, tgt_ntokens, tgt_vocab)，
+        # 元素x[i,j]是长度为tgt_vocab的向量，其每一维度代表对应tgt token的概率，一般选取最高的作为预测值
         loss = self.criterion(x.contiguous().view(-1, x.size(-1)),
                               y.contiguous().view(-1)) / norm
         # self.criterion是定义的loss函数，调用其forward方法，计算x和y之间具体的loss值，除以norm是预测的数量，得到平均每个token的loss
@@ -691,8 +687,17 @@ class SimpleLossCompute:
         return loss.data * norm  # 上面除以norm，这里又乘以norm，是为何？
 
 
+# # Greedy Decoding
 def greedy_decode(model, src, src_mask, max_len, start_symbol):
-    # Greedy Decoding
+    r"""贪婪搜索，进行预测
+    :param model: (EncoderDecoder) Transformer模型
+    :param src: (torch.Tensor) 模型的输入，shape=(batch_size,src_ntokens) 只输入一个sentence，batch_size=1
+    :param src_mask: (torch.Tensor) 输入的mask，padding mask，shape=(batch_size,1,src_ntokens)
+    :param max_len: (int) src最长的token数量
+    :param start_symbol: (int) 作为start_symbol的token的id，即其在src_vocab中的index
+    :return: (torch.Tensor) 包含start_symbol的预测序列，shape=(batch_size,1,max_len)，其中第一个是初始加入的start_symbol，
+    后面(max_len-1)个是预测产生
+    """
     memory = model.encode(src, src_mask)
     ys = torch.ones(1, 1).fill_(start_symbol).type_as(src.data)
     for i in range(max_len-1):
@@ -713,9 +718,11 @@ def greedy_decode(model, src, src_mask, max_len, start_symbol):
     return ys
 
 
-if __name__ == '__main__':
-
-    # Train the simple copy task.-----------------------------
+def copytask():
+    r"""
+    Given a random set of input symbols from a small vocabulary, the goal is to generate back those same symbols.
+    复制任务，输入来自小词汇表的随机符号，希望模型输出相同的符号
+    """
     V = 11  # 这里是src_vocab=tgt_vocab=V
     criterion = LabelSmoothing(size=V, padding_idx=0, smoothing=0.0)  # 构建loss函数
     model = make_model(V, V, N=2)  # 构建模型
@@ -736,4 +743,7 @@ if __name__ == '__main__':
     src = Variable(torch.LongTensor([[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]]))
     src_mask = Variable(torch.ones(1, 1, 10))
     print(greedy_decode(model, src, src_mask, max_len=10, start_symbol=1))
-    # A First Example END----------------------------------------
+
+
+if __name__ == '__main__':
+    copytask()
