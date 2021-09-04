@@ -128,9 +128,17 @@ dmypy.json
 # Pyre type checker
 .pyre/
 
+# customized------
 
-# other
+# ide
 .vscode/
 .idea/
 .ipynb_checkpoints/
+
+# tmpfile
 tmp.py
+tmp.ipynb
+tmp.txt
+
+# data
+wData/
